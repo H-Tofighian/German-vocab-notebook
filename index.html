@@ -1,0 +1,138 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>German Vocab Notebook (Cloud Sync)</title>
+  <style>
+    :root{
+      --bg:#0f172a;--text:#e5e7eb;--accent:#3b82f6;--accent-2:#22c55e;--danger:#ef4444;--border:#1f2937;--chip:#0b1220;--shadow:0 10px 25px rgba(0,0,0,.35);--radius:16px;
+    }
+    body{margin:0;background:radial-gradient(1200px 800px at 10% -10%,#1e293b 0%,#0b1220 40%,#0f172a 100%);color:var(--text);font-family:sans-serif;}
+    .wrap{max-width:1080px;margin:32px auto;padding:0 20px;}
+    header{display:flex;align-items:center;gap:16px;margin-bottom:16px;}
+    .logo{width:44px;height:44px;display:grid;place-items:center;border-radius:12px;background:linear-gradient(135deg,#1d4ed8,#0ea5e9);box-shadow:var(--shadow);font-weight:800;}
+    .toolbar{display:flex;flex-wrap:wrap;gap:10px;margin:18px 0 24px;align-items:center;}
+    .card{background:rgba(255,255,255,.03);border:1px solid var(--border);border-radius:var(--radius);box-shadow:var(--shadow);padding:14px;}
+    button{background:var(--accent);color:white;border:none;padding:10px 14px;border-radius:12px;cursor:pointer;font-weight:600;}
+    .btn-ghost{background:transparent;border:1px solid var(--border);color:#cbd5e1;}
+    .btn-success{background:var(--accent-2);}
+    .btn-danger{background:var(--danger);}
+    table{width:100%;border-collapse:collapse;}
+    th,td{border-bottom:1px solid var(--border);padding:8px;}
+    .checkboxes{display:grid;grid-template-columns:repeat(8,1fr);gap:4px;}
+    .tick{width:26px;height:26px;display:grid;place-items:center;border-radius:6px;cursor:pointer;border:1px solid var(--border);background:var(--chip);}
+    .tick[aria-checked="true"]{background:rgba(34,197,94,.2);border-color:rgba(34,197,94,.5);}
+    .pill{display:inline-flex;align-items:center;gap:6px;background:var(--chip);border:1px solid var(--border);padding:6px 10px;border-radius:999px;}
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <header>
+      <div class="logo">✓</div>
+      <div>
+        <h1>German Vocab Notebook</h1>
+        <p>Syncs your words across devices with Firebase Cloud Firestore</p>
+      </div>
+    </header>
+
+    <section class="toolbar card">
+      <input id="wordInput" type="text" placeholder="Word (e.g., Haus)" />
+      <input id="meaningInput" type="text" placeholder="Meaning (e.g., house)" />
+      <button id="addBtn">Add</button>
+      <button class="btn-success" id="signInBtn">Sign in with Google</button>
+      <button class="btn-ghost" id="signOutBtn" style="display:none">Sign out</button>
+      <span id="userBadge" class="pill" style="display:none"></span>
+    </section>
+
+    <section class="card" style="overflow:auto;max-height:70vh">
+      <table id="vocabTable">
+        <thead>
+          <tr><th>Word</th><th>Meaning</th><th>Progress</th><th>Actions</th></tr>
+        </thead>
+        <tbody id="tbody"></tbody>
+      </table>
+    </section>
+  </div>
+
+  <script type="module">
+    // ======================
+    // 0) Firebase Setup
+    // ======================
+    import { initializeApp } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-app.js";
+    import { getAuth, GoogleAuthProvider, signInWithPopup, signOut, onAuthStateChanged } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-auth.js";
+    import { getFirestore, doc, getDoc, setDoc } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore.js";
+
+    const firebaseConfig = {
+      apiKey: "AIzaSyAxo9j4TtB2eSD4Nd0K1FXpCYrh7vIdDOM",
+      authDomain: "german-vocab-notebook.firebaseapp.com",
+      projectId: "german-vocab-notebook",
+      storageBucket: "german-vocab-notebook.firebasestorage.app",
+      messagingSenderId: "95722480561",
+      appId: "1:95722480561:web:b6ab675cbab6ced1a69390",
+      measurementId: "G-04007EBXJZ"
+    };
+
+    const app = initializeApp(firebaseConfig);
+    const auth = getAuth(app);
+    const db = getFirestore(app);
+    const provider = new GoogleAuthProvider();
+
+    // ======================
+    // 1) App logic
+    // ======================
+    const STORAGE_KEY='vocabData', SETTINGS_KEY='vocabSettings';
+    const defaultBoxCount=8;
+    let data=JSON.parse(localStorage.getItem(STORAGE_KEY)||'[]');
+
+    const tbody=document.getElementById('tbody');
+    const wordInput=document.getElementById('wordInput');
+    const meaningInput=document.getElementById('meaningInput');
+    const addBtn=document.getElementById('addBtn');
+    const signInBtn=document.getElementById('signInBtn');
+    const signOutBtn=document.getElementById('signOutBtn');
+    const userBadge=document.getElementById('userBadge');
+
+    function uid(){return Math.random().toString(36).slice(2,10);}
+    function ensureBoxes(r,n){r.ticks=r.ticks||[];while(r.ticks.length<n)r.ticks.push(false);return r.ticks.slice(0,n);}
+    function save(){localStorage.setItem(STORAGE_KEY,JSON.stringify(data));const u=auth.currentUser;if(u)setDoc(doc(db,'users',u.uid),{data},{merge:true});}
+
+    function render(){
+      tbody.innerHTML='';
+      data.forEach(r=>{
+        const tr=document.createElement('tr');
+        const tdW=document.createElement('td');tdW.textContent=r.word;
+        const tdM=document.createElement('td');tdM.textContent=r.meaning;
+        const tdP=document.createElement('td');const wrap=document.createElement('div');wrap.className='checkboxes';
+        ensureBoxes(r,defaultBoxCount).forEach((v,i)=>{
+          const b=document.createElement('div');b.className='tick';b.setAttribute('aria-checked',v);b.textContent=v?'✓':'';b.onclick=()=>{r.ticks[i]=!r.ticks[i];save();render();};wrap.appendChild(b);
+        });tdP.appendChild(wrap);
+        const tdA=document.createElement('td');const del=document.createElement('button');del.textContent='Delete';del.className='btn-danger';del.onclick=()=>{data=data.filter(x=>x.id!==r.id);save();render();};tdA.appendChild(del);
+        tr.append(tdW,tdM,tdP,tdA);tbody.appendChild(tr);
+      });
+    }
+
+    addBtn.onclick=()=>{const w=wordInput.value.trim(),m=meaningInput.value.trim();if(!w||!m)return;data.unshift({id:uid(),word:w,meaning:m,ticks:Array(defaultBoxCount).fill(false)});wordInput.value='';meaningInput.value='';save();render();};
+
+    // ======================
+    // 2) Auth / Cloud Sync
+    // ======================
+    signInBtn.onclick=()=>signInWithPopup(auth,provider);
+    signOutBtn.onclick=()=>signOut(auth);
+    onAuthStateChanged(auth,async u=>{
+      if(u){
+        signInBtn.style.display='none';signOutBtn.style.display='inline-block';userBadge.style.display='inline-flex';userBadge.textContent=u.displayName||u.email;
+        const snap=await getDoc(doc(db,'users',u.uid));
+        if(snap.exists()){data=snap.data().data||[];localStorage.setItem(STORAGE_KEY,JSON.stringify(data));}
+        else await setDoc(doc(db,'users',u.uid),{data}, {merge:true});
+        render();
+      }else{
+        signInBtn.style.display='inline-block';signOutBtn.style.display='none';userBadge.style.display='none';
+      }
+    });
+
+    // initial render
+    render();
+  </script>
+</body>
+</html>
