@@ -14,16 +14,21 @@
     .logo{width:44px;height:44px;display:grid;place-items:center;border-radius:12px;background:linear-gradient(135deg,#1d4ed8,#0ea5e9);box-shadow:var(--shadow);font-weight:800;}
     .toolbar{display:flex;flex-wrap:wrap;gap:10px;margin:18px 0 24px;align-items:center;}
     .card{background:rgba(255,255,255,.03);border:1px solid var(--border);border-radius:var(--radius);box-shadow:var(--shadow);padding:14px;}
+    input{background:var(--chip);color:var(--text);border:1px solid var(--border);padding:10px 12px;border-radius:12px;}
     button{background:var(--accent);color:white;border:none;padding:10px 14px;border-radius:12px;cursor:pointer;font-weight:600;}
     .btn-ghost{background:transparent;border:1px solid var(--border);color:#cbd5e1;}
     .btn-success{background:var(--accent-2);}
     .btn-danger{background:var(--danger);}
     table{width:100%;border-collapse:collapse;}
-    th,td{border-bottom:1px solid var(--border);padding:8px;}
+    th,td{border-bottom:1px solid var(--border);padding:8px;vertical-align:middle;}
     .checkboxes{display:grid;grid-template-columns:repeat(8,1fr);gap:4px;}
-    .tick{width:26px;height:26px;display:grid;place-items:center;border-radius:6px;cursor:pointer;border:1px solid var(--border);background:var(--chip);}
-    .tick[aria-checked="true"]{background:rgba(34,197,94,.2);border-color:rgba(34,197,94,.5);}
+    .tick{width:26px;height:26px;display:grid;place-items:center;border-radius:6px;cursor:pointer;border:1px solid var(--border);background:var(--chip);user-select:none;font-weight:700;}
+    .tick[data-state="1"]{background:rgba(34,197,94,.2);border-color:rgba(34,197,94,.5);}   /* ✓ */
+    .tick[data-state="-1"]{background:rgba(239,68,68,.2);border-color:rgba(239,68,68,.5);} /* ✗ */
+    .cue{font-weight:700;cursor:pointer}
+    .answer{color:#cbd5e1}
     .pill{display:inline-flex;align-items:center;gap:6px;background:var(--chip);border:1px solid var(--border);padding:6px 10px;border-radius:999px;}
+    .spacer{flex:1}
   </style>
 </head>
 <body>
@@ -32,7 +37,7 @@
       <div class="logo">✓</div>
       <div>
         <h1>German Vocab Notebook</h1>
-        <p>Syncs your words across devices with Firebase Cloud Firestore</p>
+        <p>Click a word to reveal the meaning • Tri-state boxes • Reverse study mode</p>
       </div>
     </header>
 
@@ -40,6 +45,17 @@
       <input id="wordInput" type="text" placeholder="Word (e.g., Haus)" />
       <input id="meaningInput" type="text" placeholder="Meaning (e.g., house)" />
       <button id="addBtn">Add</button>
+
+      <span class="spacer"></span>
+
+      <button class="btn-ghost" id="modeBtn" title="Toggle study direction">Mode: Word → Meaning</button>
+      <span class="pill" title="How many boxes per row">
+        Boxes:
+        <select id="boxCountSel" style="background:transparent;color:var(--text);border:none">
+          <option>8</option><option>6</option><option>10</option><option>12</option>
+        </select>
+      </span>
+
       <button class="btn-success" id="signInBtn">Sign in with Google</button>
       <button class="btn-ghost" id="signOutBtn" style="display:none">Sign out</button>
       <span id="userBadge" class="pill" style="display:none"></span>
@@ -48,7 +64,12 @@
     <section class="card" style="overflow:auto;max-height:70vh">
       <table id="vocabTable">
         <thead>
-          <tr><th>Word</th><th>Meaning</th><th>Progress</th><th>Actions</th></tr>
+          <tr>
+            <th style="width:28%">Cue (click to reveal answer)</th>
+            <th>Answer</th>
+            <th style="width:340px">Progress</th>
+            <th style="width:160px">Actions</th>
+          </tr>
         </thead>
         <tbody id="tbody"></tbody>
       </table>
@@ -79,11 +100,13 @@
     const provider = new GoogleAuthProvider();
 
     // ======================
-    // 1) App logic
+    // 1) State / Settings
     // ======================
-    const STORAGE_KEY='vocabData', SETTINGS_KEY='vocabSettings';
+    const STORAGE_KEY='vocabData_v2', SETTINGS_KEY='vocabSettings_v2';
     const defaultBoxCount=8;
-    let data=JSON.parse(localStorage.getItem(STORAGE_KEY)||'[]');
+
+    let data = JSON.parse(localStorage.getItem(STORAGE_KEY)||'[]');
+    let settings = Object.assign({ boxCount: defaultBoxCount, mode: 'forward' }, JSON.parse(localStorage.getItem(SETTINGS_KEY)||'{}'));
 
     const tbody=document.getElementById('tbody');
     const wordInput=document.getElementById('wordInput');
@@ -92,46 +115,173 @@
     const signInBtn=document.getElementById('signInBtn');
     const signOutBtn=document.getElementById('signOutBtn');
     const userBadge=document.getElementById('userBadge');
+    const modeBtn=document.getElementById('modeBtn');
+    const boxCountSel=document.getElementById('boxCountSel');
+    boxCountSel.value = String(settings.boxCount);
+
+    // transient reveal state (not persisted)
+    const revealed = new Map(); // id -> boolean
 
     function uid(){return Math.random().toString(36).slice(2,10);}
-    function ensureBoxes(r,n){r.ticks=r.ticks||[];while(r.ticks.length<n)r.ticks.push(false);return r.ticks.slice(0,n);}
-    function save(){localStorage.setItem(STORAGE_KEY,JSON.stringify(data));const u=auth.currentUser;if(u)setDoc(doc(db,'users',u.uid),{data},{merge:true});}
+
+    // Backwards compatibility: upgrade rows with old boolean ticks => ticksF (1/0)
+    function upgradeRow(r){
+      if (Array.isArray(r.ticks) && !Array.isArray(r.ticksF)) {
+        r.ticksF = r.ticks.map(v => v ? 1 : 0);
+        delete r.ticks;
+      }
+      if (!Array.isArray(r.ticksF)) r.ticksF = Array(settings.boxCount).fill(0);
+      if (!Array.isArray(r.ticksR)) r.ticksR = Array(settings.boxCount).fill(0);
+      return r;
+    }
+
+    data = data.map(upgradeRow);
+
+    function ensureBoxesTri(r, prop, n){
+      r[prop] = Array.isArray(r[prop]) ? r[prop].slice(0,n) : [];
+      while(r[prop].length < n) r[prop].push(0); // 0=unset, 1=correct, -1=wrong
+      return r[prop];
+    }
+
+    function saveLocal(){
+      localStorage.setItem(STORAGE_KEY, JSON.stringify(data));
+      localStorage.setItem(SETTINGS_KEY, JSON.stringify(settings));
+    }
+
+    async function saveCloud(){
+      const u = auth.currentUser;
+      if (!u) return;
+      await setDoc(doc(db,'users',u.uid), { data, settings, updatedAt: new Date().toISOString() }, { merge:true });
+    }
+
+    function save(){ saveLocal(); saveCloud(); }
+
+    // ======================
+    // 2) Rendering
+    // ======================
+    function triChar(s){ return s===1 ? '✓' : (s===-1 ? '✗' : ''); }
 
     function render(){
       tbody.innerHTML='';
+      const prop = settings.mode==='forward' ? 'ticksF' : 'ticksR';
       data.forEach(r=>{
+        upgradeRow(r);
         const tr=document.createElement('tr');
-        const tdW=document.createElement('td');tdW.textContent=r.word;
-        const tdM=document.createElement('td');tdM.textContent=r.meaning;
-        const tdP=document.createElement('td');const wrap=document.createElement('div');wrap.className='checkboxes';
-        ensureBoxes(r,defaultBoxCount).forEach((v,i)=>{
-          const b=document.createElement('div');b.className='tick';b.setAttribute('aria-checked',v);b.textContent=v?'✓':'';b.onclick=()=>{r.ticks[i]=!r.ticks[i];save();render();};wrap.appendChild(b);
-        });tdP.appendChild(wrap);
-        const tdA=document.createElement('td');const del=document.createElement('button');del.textContent='Delete';del.className='btn-danger';del.onclick=()=>{data=data.filter(x=>x.id!==r.id);save();render();};tdA.appendChild(del);
-        tr.append(tdW,tdM,tdP,tdA);tbody.appendChild(tr);
+
+        // Cue cell (click to reveal)
+        const tdCue=document.createElement('td');
+        const cue=document.createElement('span');
+        cue.className='cue';
+        cue.textContent = settings.mode==='forward' ? r.word : r.meaning;
+        cue.title = 'Click to reveal/hide the answer';
+        cue.onclick = () => { revealed.set(r.id, !revealed.get(r.id)); render(); };
+        tdCue.appendChild(cue);
+
+        // Answer cell (hidden until clicked)
+        const tdAns=document.createElement('td');
+        const ans=document.createElement('span');
+        ans.className='answer';
+        const isShown = revealed.get(r.id) === true;
+        ans.textContent = isShown ? (settings.mode==='forward' ? r.meaning : r.word) : '••••••••';
+        tdAns.appendChild(ans);
+
+        // Progress (tri-state)
+        const tdP=document.createElement('td');
+        const wrap=document.createElement('div'); wrap.className='checkboxes';
+        const boxes = ensureBoxesTri(r, prop, settings.boxCount);
+        boxes.forEach((state, i) => {
+          const b=document.createElement('div'); b.className='tick';
+          b.dataset.state = String(state);
+          b.textContent = triChar(state);
+          b.title = 'Click: ☐ → ✓ → ✗ → ☐';
+          b.onclick = () => {
+            const next = state===0 ? 1 : (state===1 ? -1 : 0);
+            r[prop][i] = next;
+            save(); render();
+          };
+          wrap.appendChild(b);
+        });
+        tdP.appendChild(wrap);
+
+        // Actions
+        const tdA=document.createElement('td');
+        const reset=document.createElement('button');
+        reset.className='btn-ghost'; reset.textContent='Reset';
+        reset.onclick=()=>{ r[prop] = Array(settings.boxCount).fill(0); save(); render(); };
+        const del=document.createElement('button');
+        del.textContent='Delete'; del.className='btn-danger';
+        del.onclick=()=>{ data=data.filter(x=>x.id!==r.id); revealed.delete(r.id); save(); render(); };
+        tdA.append(reset, del);
+
+        tr.append(tdCue, tdAns, tdP, tdA);
+        tbody.appendChild(tr);
       });
     }
 
-    addBtn.onclick=()=>{const w=wordInput.value.trim(),m=meaningInput.value.trim();if(!w||!m)return;data.unshift({id:uid(),word:w,meaning:m,ticks:Array(defaultBoxCount).fill(false)});wordInput.value='';meaningInput.value='';save();render();};
+    // ======================
+    // 3) Events
+    // ======================
+    addBtn.onclick=()=>{
+      const w=wordInput.value.trim(), m=meaningInput.value.trim();
+      if(!w||!m) return;
+      const row={ id:uid(), word:w, meaning:m, ticksF:Array(settings.boxCount).fill(0), ticksR:Array(settings.boxCount).fill(0) };
+      data.unshift(row);
+      wordInput.value=''; meaningInput.value='';
+      save(); render();
+    };
+
+    modeBtn.onclick=()=>{
+      settings.mode = settings.mode==='forward' ? 'reverse' : 'forward';
+      modeBtn.textContent = settings.mode==='forward' ? 'Mode: Word → Meaning' : 'Mode: Meaning → Word';
+      saveLocal(); render();
+    };
+    // initial label
+    modeBtn.textContent = settings.mode==='forward' ? 'Mode: Word → Meaning' : 'Mode: Meaning → Word';
+
+    boxCountSel.onchange=()=>{
+      settings.boxCount = Number(boxCountSel.value||defaultBoxCount);
+      // resize all rows for both directions
+      data.forEach(r=>{
+        ensureBoxesTri(r,'ticksF',settings.boxCount);
+        ensureBoxesTri(r,'ticksR',settings.boxCount);
+      });
+      save(); render();
+    };
 
     // ======================
-    // 2) Auth / Cloud Sync
+    // 4) Auth / Cloud Sync
     // ======================
     signInBtn.onclick=()=>signInWithPopup(auth,provider);
     signOutBtn.onclick=()=>signOut(auth);
-    onAuthStateChanged(auth,async u=>{
+
+    onAuthStateChanged(auth, async u=>{
       if(u){
-        signInBtn.style.display='none';signOutBtn.style.display='inline-block';userBadge.style.display='inline-flex';userBadge.textContent=u.displayName||u.email;
-        const snap=await getDoc(doc(db,'users',u.uid));
-        if(snap.exists()){data=snap.data().data||[];localStorage.setItem(STORAGE_KEY,JSON.stringify(data));}
-        else await setDoc(doc(db,'users',u.uid),{data}, {merge:true});
+        signInBtn.style.display='none';signOutBtn.style.display='inline-block';
+        userBadge.style.display='inline-flex';userBadge.textContent=u.displayName||u.email;
+
+        // pull cloud; if empty, push local
+        try{
+          const snap=await getDoc(doc(db,'users',u.uid));
+          if(snap.exists()){
+            const payload=snap.data()||{};
+            if(Array.isArray(payload.data)) data = payload.data.map(upgradeRow);
+            if(payload.settings) settings = Object.assign({ boxCount: defaultBoxCount, mode: 'forward' }, payload.settings);
+            boxCountSel.value = String(settings.boxCount);
+            saveLocal(); // cache
+          } else {
+            await setDoc(doc(db,'users',u.uid),{data,settings},{merge:true});
+          }
+        }catch(e){ console.error(e); }
         render();
       }else{
-        signInBtn.style.display='inline-block';signOutBtn.style.display='none';userBadge.style.display='none';
+        signInBtn.style.display='inline-block';signOutBtn.style.display='none';
+        userBadge.style.display='none';
       }
     });
 
-    // initial render
+    // ======================
+    // 5) First render
+    // ======================
     render();
   </script>
 </body>
