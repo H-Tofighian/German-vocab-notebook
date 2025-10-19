@@ -26,7 +26,8 @@
     .tick[data-state="1"]{background:rgba(34,197,94,.2);border-color:rgba(34,197,94,.5);}   /* ✓ */
     .tick[data-state="-1"]{background:rgba(239,68,68,.2);border-color:rgba(239,68,68,.5);} /* ✗ */
     .cue{font-weight:700;cursor:pointer}
-    .answer{color:#cbd5e1}
+    .answer{color:#94a3b8; transition:color .3s ease;font-weight:600;}
+    .answer.revealed{color:#22c55e;}
     .pill{display:inline-flex;align-items:center;gap:6px;background:var(--chip);border:1px solid var(--border);padding:6px 10px;border-radius:999px;}
     .spacer{flex:1}
   </style>
